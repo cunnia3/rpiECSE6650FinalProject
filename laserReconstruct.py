@@ -13,6 +13,11 @@ from cv_bridge import CvBridge, CvBridgeError
 import Image as Picture
 import time
 
+from sensor_msgs.msg import PointCloud2
+import std_msgs.msg
+import sensor_msgs.point_cloud2 as pcl2
+
+import sensor_msgs.point_cloud2 as pcl2
 
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
@@ -111,8 +116,8 @@ def activeStereo3Dfrom2D( p2D, P, planeA, planeB, planeC, planeD):
     b = np.array([[P[0,2]*planeD/planeC+P[0,3]],[P[1,2]*planeD/planeC+P[1,3]],[P[2,2]*planeD/planeC+P[2,3]]])
     b = b.reshape(3,1)
     # Solve for X,Y and lambda
-    x = np.linalg.inv(A)*b   
-    
+    x = np.dot(np.linalg.inv(A),b)   
+
     pX = x[0] # X COORD
     pY = x[1] # Y COORD
     pZ = (planeD-planeA*pX - planeB*pY)/planeC
@@ -142,10 +147,7 @@ def getPlaneParams(armKin):
     planeD = np.dot(normal.reshape(1,3),rPos)
     return (planeA,planeB,planeC, planeD)
 
-def plot3DResults(reconstructed3D):
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    
+def plot3DResults(ax, reconstructed3D):
     x = []
     y = []
     z = []
@@ -154,11 +156,10 @@ def plot3DResults(reconstructed3D):
         y.append(point[1])
         z.append(point[2])
         
+    ax.clear()
     ax.scatter(x, y, z, c='r', marker='o')
-    ax.set_xlabel('X Label')
-    ax.set_ylabel('Y Label')
-    ax.set_zlabel('Z Label')
-    plt.show()    
+    plt.draw()
+    plt.pause(0.01)   
     
     
 def main():
@@ -167,12 +168,22 @@ def main():
     kinL = baxter_kinematics('left')
     ic = image_converter()
     
+    pointcloud_publisher = rospy.Publisher("/my_pcl_topic", PointCloud2)    
+    
     start = time.time()    
     # analyze images for 10 seconds
-    reconstructed3D = []
-    while time.time() - start < 1:
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')  
+    ax.set_xlabel('X Label')
+    ax.set_ylabel('Y Label')
+    ax.set_zlabel('Z Label')
+    while time.time() - start < 800:
+        reconstructed3D = []
         if ic.newImage: # wait till we have a new image to do anything
-            detected2DPoints = findLine(ic.getImage(), sampleRate = 4, plotStuff=True)
+            header = std_msgs.msg.Header()
+            header.stamp = rospy.Time.now()
+            header.frame_id = 'base'
+            detected2DPoints = findLine(ic.getImage(), sampleRate = 4)
             # get plane parameters
             planeA,planeB,planeC,planeD = getPlaneParams(kinR)
             
@@ -182,8 +193,10 @@ def main():
             for detected2DPoint in detected2DPoints: 
                 new3D = activeStereo3Dfrom2D(detected2DPoint,P,planeA,planeB,planeC,planeD)
                 reconstructed3D.append(new3D)
-        
-    plot3DResults(reconstructed3D)
+                
+            scaled_polygon_pcl = pcl2.create_cloud_xyz32(header, reconstructed3D)
+            pointcloud_publisher.publish(scaled_polygon_pcl)
+            plot3DResults(ax, reconstructed3D)
 
     
 if __name__ == "__main__":

@@ -101,7 +101,7 @@ def activeStereo3Dfrom2D( p2D, P, planeA, planeB, planeC, planeD):
     b = np.array([[P[0,2]*planeD/planeC+P[0,3]],[P[1,2]*planeD/planeC+P[1,3]],[P[2,2]*planeD/planeC+P[2,3]]])
     b = b.reshape(3,1)
     # Solve for X,Y and lambda
-    x = np.linalg.inv(A)*b
+    x = np.dot(np.linalg.inv(A),b)
     
     #print "P", [P[2,2]*planeD/planeC+P[2,3]]
     #print "plane params", planeA, planeB, planeC, planeD

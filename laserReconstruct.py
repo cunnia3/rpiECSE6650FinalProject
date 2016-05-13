@@ -4,19 +4,16 @@
 # Description: RPI computer vision class final project, obtaining 3D coordinates
 # by using a laser and a camera to scan the environment
 import rospy
-from baxter_pykdl import baxter_kinematics
-from Quaternion import Quat
 import numpy as np
 import cv2
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 import Image as Picture
 import time
+import tf
 
 from sensor_msgs.msg import PointCloud2
 import std_msgs.msg
-import sensor_msgs.point_cloud2 as pcl2
-
 import sensor_msgs.point_cloud2 as pcl2
 
 from mpl_toolkits.mplot3d import Axes3D
@@ -84,20 +81,7 @@ class image_converter:
 # Given the inrinsic parameters of a camera and the arm it is attached to
 # find the projcetion matrix
 # default W is for left camera frame
-def getPFull(armKin, W = np.array([[406.00431,0,590.6386],[0,406.0743,420.9455],[0,0,1]])):
-    
-        # return (normal, rPos) where normal is the normal of the plane and
-    # rPos is a point on the plane ( position of the end effector )
-    
-    # Get camera extrinsic parameters from robot arm
-    T = armKin.forward_position_kinematics()[0:3]
-    rOrientation = armKin.forward_position_kinematics()[3:7]
-    
-    #print "lPos", T
-    #print "lOrientation", rOrientation
-    myQuat = Quat(rOrientation)
-    R = myQuat._quat2transform()
-    
+def getPFull(R,T, W = np.array([[406.00431,0,590.6386],[0,406.0743,420.9455],[0,0,1]])):    
     M = np.append(R,T.reshape(3,1),1)
     P = np.dot(W,M)
     return P
@@ -124,29 +108,22 @@ def activeStereo3Dfrom2D( p2D, P, planeA, planeB, planeC, planeD):
     return np.array([[pX],[pY],[pZ]])
     
 
-
-def getPlaneParams(armKin):
-    # return (normal, rPos) where normal is the normal of the plane and
-    # rPos is a point on the plane ( position of the end effector )
-    
-    # Get laser plane parameters from a connected and running Baxter
-    rPos = armKin.forward_position_kinematics()[0:3]
-    rOrientation = armKin.forward_position_kinematics()[3:7]
-    
-    myQuat = Quat(rOrientation)
-    R_0R = myQuat._quat2transform()
-    
+# Get plane parameters for a given orientation of end effector and translation
+# to end effector
+def getPlaneParams(R,T):
     # we know that the x direction in the manipulator frame is the direction
     # perpendicular to the laser plane through inspection of the baxter model
     # and the transform tree
     ex = np.array([[1],[0],[0]])
-    normal = np.dot(R_0R.T, ex)
+    normal = np.dot(R, ex)
     planeA = normal[0]
     planeB = normal[1]
     planeC= normal[2]
-    planeD = np.dot(normal.reshape(1,3),rPos)
+    planeD = np.dot(normal.reshape(1,3),T)
     return (planeA,planeB,planeC, planeD)
 
+# plot 3D results in scatter plot, this function will update the plot
+# each time it is called
 def plot3DResults(ax, reconstructed3D):
     x = []
     y = []
@@ -160,43 +137,67 @@ def plot3DResults(ax, reconstructed3D):
     ax.scatter(x, y, z, c='r', marker='o')
     plt.draw()
     plt.pause(0.01)   
-    
-    
+
+def getTransform(listener, frame2, frame1):
+    try:
+        position, quaternion= listener.lookupTransform(frame1, frame2, rospy.Time(0))
+        homogenousMatrix= listener.fromTranslationRotation(position, quaternion)
+    except:
+        print "couldnt transform"
+        time.sleep(.5)
+        return (-1,-1)
+    rotation = homogenousMatrix[0:3,0:3]
+    translation = homogenousMatrix[0:3,3]
+    return rotation, translation
+
+        
+
+
 def main():
     rospy.init_node('baxter_laser_reconstruction')
-    kinR = baxter_kinematics('right')
-    kinL = baxter_kinematics('left')
     ic = image_converter()
-    
     pointcloud_publisher = rospy.Publisher("/my_pcl_topic", PointCloud2)    
     
     start = time.time()    
-    # analyze images for 10 seconds
+
+    listener= tf.TransformListener()
+    
+    # get pipeline filled with transforms (first couple of transforms wont work)
+    while time.time() - start < 1:
+       getTransform(listener,'base','right_hand')
+       
+    
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')  
     ax.set_xlabel('X Label')
     ax.set_ylabel('Y Label')
     ax.set_zlabel('Z Label')
+    
+    
     while time.time() - start < 800:
         reconstructed3D = []
         if ic.newImage: # wait till we have a new image to do anything
-            header = std_msgs.msg.Header()
-            header.stamp = rospy.Time.now()
-            header.frame_id = 'base'
-            detected2DPoints = findLine(ic.getImage(), sampleRate = 4)
-            # get plane parameters
-            planeA,planeB,planeC,planeD = getPlaneParams(kinR)
+            detected2DPoints = findLine(ic.getImage(), sampleRate = 20)
             
-            # get projection matrix, camera is on left hand
-            P = getPFull(kinL)           
+            Rleft,Tleft = getTransform(listener,'left_hand_camera','base')
+            Rright,Tright = getTransform(listener,'base','right_hand')
+            
+            planeA,planeB,planeC,planeD = getPlaneParams(Rright,Tright)
+            P = getPFull(Rleft,Tleft)           
             
             for detected2DPoint in detected2DPoints: 
                 new3D = activeStereo3Dfrom2D(detected2DPoint,P,planeA,planeB,planeC,planeD)
                 reconstructed3D.append(new3D)
-                
-            scaled_polygon_pcl = pcl2.create_cloud_xyz32(header, reconstructed3D)
+
+            # Get ready to publish point cloud
+            header = std_msgs.msg.Header()
+            header.stamp = rospy.Time.now()
+            header.frame_id = 'base'
+            #scaled_polygon_pcl = pcl2.create_cloud_xyz32(header, reconstructed3D)
+            scaled_polygon_pcl = pcl2.create_cloud_xyz32(header, [[0,0,0],Tleft])            
             pointcloud_publisher.publish(scaled_polygon_pcl)
-            plot3DResults(ax, reconstructed3D)
+            
+            #plot3DResults(ax, reconstructed3D)
 
     
 if __name__ == "__main__":

@@ -91,21 +91,32 @@ def activeStereo3Dfrom2D( p2D, P, planeA, planeB, planeC, planeD):
     # Pixel Coordinates
     c = p2D[0]
     r = p2D[1]
-    
+      
     # Form system of equations Ax = b where x is [X,Y,lambda]
     A = np.zeros([3,3])
     A[0]= np.array([-P[0,0]+P[0,2]*planeA/planeC, -P[0,1]+P[0,2]*planeB/planeC, c])
     A[1]= np.array([-P[1,0]+P[1,2]*planeA/planeC, -P[1,1]+P[1,2]*planeB/planeC, r])
     A[2]= np.array([-P[2,0]+P[2,2]*planeA/planeC, -P[2,1]+P[2,2]*planeB/planeC, 1])
     b = np.array([[P[0,2]*planeD/planeC+P[0,3]],[P[1,2]*planeD/planeC+P[1,3]],[P[2,2]*planeD/planeC+P[2,3]]])
-    b = b.reshape(3,1)
+    b = b.reshape(3,1)    
     # Solve for X,Y and lambda
     x = np.dot(np.linalg.inv(A),b)   
 
     pX = x[0] # X COORD
     pY = x[1] # Y COORD
     pZ = (planeD-planeA*pX - planeB*pY)/planeC
-    return np.array([[pX],[pY],[pZ]])
+    
+    #MANUAL ROTATION 
+   
+    point = np.array([[pX],[pY],[pZ]])
+    point=point.reshape(3,1)
+#    rot = np.array([[0,1,0],[0,0,1],[1,0,0]])
+#    rot= np.transpose(rot)
+    #point = np.dot(rot,point)   
+    
+    return point
+    #rotPoint = np.dot(rot,point)
+    #return rotPoint
     
 
 # Get plane parameters for a given orientation of end effector and translation
@@ -119,8 +130,8 @@ def getPlaneParams(R,T):
     planeA = normal[0]
     planeB = normal[1]
     planeC= normal[2]
-    planeD = np.dot(normal.reshape(1,3),T)
-    return (planeA,planeB,planeC, planeD)
+    planeD = -np.dot(normal.reshape(1,3),T)
+    return (planeA,planeB,planeC,planeD)
 
 # plot 3D results in scatter plot, this function will update the plot
 # each time it is called
@@ -134,11 +145,14 @@ def plot3DResults(ax, reconstructed3D):
         z.append(point[2])
         
     ax.clear()
+    ax.set_xlabel('X Label')
+    ax.set_ylabel('Y Label')
+    ax.set_zlabel('Z Label')
     ax.scatter(x, y, z, c='r', marker='o')
     plt.draw()
     plt.pause(0.01)   
 
-def getTransform(listener, frame2, frame1):
+def getTransform(listener, frame1, frame2):
     try:
         position, quaternion= listener.lookupTransform(frame1, frame2, rospy.Time(0))
         homogenousMatrix= listener.fromTranslationRotation(position, quaternion)
@@ -150,9 +164,13 @@ def getTransform(listener, frame2, frame1):
     translation = homogenousMatrix[0:3,3]
     return rotation, translation
 
-        
-
-
+def transformPoint(target,source,point):
+   R,T=getTransform(target,source)
+   return np.dot(R,point)+T
+   
+def testPlanePoint(planeA,planeB,planeC,planeD,point):
+    return planeA*point[0]+planeB*point[1]+planeC*point[2]+planeD
+    
 def main():
     rospy.init_node('baxter_laser_reconstruction')
     ic = image_converter()
@@ -169,21 +187,20 @@ def main():
     
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')  
-    ax.set_xlabel('X Label')
-    ax.set_ylabel('Y Label')
-    ax.set_zlabel('Z Label')
-    
     
     while time.time() - start < 800:
         reconstructed3D = []
         if ic.newImage: # wait till we have a new image to do anything
-            detected2DPoints = findLine(ic.getImage(), sampleRate = 20)
+            detected2DPoints = findLine(ic.getImage(), sampleRate = 50)
             
-            Rleft,Tleft = getTransform(listener,'left_hand_camera','base')
+            Rleft,Tleft = getTransform(listener,'base','left_hand_camera')
             Rright,Tright = getTransform(listener,'base','right_hand')
-            
+            #Rright = np.transpose(Rright)
             planeA,planeB,planeC,planeD = getPlaneParams(Rright,Tright)
             P = getPFull(Rleft,Tleft)           
+            
+            Tright = Tright.reshape(3,1) 
+            Tleft = Tleft.reshape(3,1)
             
             for detected2DPoint in detected2DPoints: 
                 new3D = activeStereo3Dfrom2D(detected2DPoint,P,planeA,planeB,planeC,planeD)
@@ -193,8 +210,33 @@ def main():
             header = std_msgs.msg.Header()
             header.stamp = rospy.Time.now()
             header.frame_id = 'base'
-            #scaled_polygon_pcl = pcl2.create_cloud_xyz32(header, reconstructed3D)
-            scaled_polygon_pcl = pcl2.create_cloud_xyz32(header, [[0,0,0],Tleft])            
+            
+            # ADD LASER PLANE POINT
+            offsetR = np.array([[.1],[0],[0]])
+            offsetL = np.array([[.1],[0],[0]])
+            testPointR = np.dot(Rright,offsetR)+Tright
+            testPointL = np.dot(Rleft,offsetL)+Tleft
+            reconstructed3D.append(testPointR)
+            reconstructed3D.append(testPointL)
+            
+            testPoint1 = np.array([[0],[.1],[.1]])
+            testPoint2 = np.array([[0],[-.1],[.1]])
+            testPoint3 = np.array([[0],[0],[.2]])
+            
+            testPoint1 = np.dot(Rright,testPoint1)+Tright
+            testPoint2 = np.dot(Rright,testPoint2)+Tright
+            testPoint3 = np.dot(Rright,testPoint3)+Tright            
+            
+            testPoint1[0] = (planeD + planeB*testPoint1[1] + planeC*testPoint1[2])/float(-planeA)
+            testPoint2[0] = (planeD + planeB*testPoint2[1] + planeC*testPoint2[2])/float(-planeA)
+            testPoint3[0] = (planeD + planeB*testPoint3[1] + planeC*testPoint3[2])/float(-planeA)
+            
+
+            reconstructed3D.append(testPoint1)
+            reconstructed3D.append(testPoint2)
+            reconstructed3D.append(testPoint3)
+            
+            scaled_polygon_pcl = pcl2.create_cloud_xyz32(header, reconstructed3D)          
             pointcloud_publisher.publish(scaled_polygon_pcl)
             
             #plot3DResults(ax, reconstructed3D)

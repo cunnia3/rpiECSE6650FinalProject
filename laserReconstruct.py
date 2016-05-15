@@ -104,7 +104,7 @@ def activeStereo3Dfrom2D( p2D, P, planeA, planeB, planeC, planeD):
 
     pX = x[0] # X COORD
     pY = x[1] # Y COORD
-    pZ = (planeD-planeA*pX - planeB*pY)/planeC
+    pZ = (planeD+planeA*pX + planeB*pY)/float(-planeC)
     
     #MANUAL ROTATION 
    
@@ -191,13 +191,14 @@ def main():
     while time.time() - start < 800:
         reconstructed3D = []
         if ic.newImage: # wait till we have a new image to do anything
-            detected2DPoints = findLine(ic.getImage(), sampleRate = 50)
+            detected2DPoints = findLine(ic.getImage(), sampleRate = 1)
             
             Rleft,Tleft = getTransform(listener,'base','left_hand_camera')
+            Rtest, Ttest = getTransform(listener,'left_hand_camera','base')
             Rright,Tright = getTransform(listener,'base','right_hand')
             #Rright = np.transpose(Rright)
             planeA,planeB,planeC,planeD = getPlaneParams(Rright,Tright)
-            P = getPFull(Rleft,Tleft)           
+            P = getPFull(Rtest,Ttest)           
             
             Tright = Tright.reshape(3,1) 
             Tleft = Tleft.reshape(3,1)
@@ -223,15 +224,16 @@ def main():
             testPoint2 = np.array([[0],[-.1],[.1]])
             testPoint3 = np.array([[0],[0],[.2]])
             
+            # Transform to base coords
             testPoint1 = np.dot(Rright,testPoint1)+Tright
             testPoint2 = np.dot(Rright,testPoint2)+Tright
             testPoint3 = np.dot(Rright,testPoint3)+Tright            
             
+            # Solve for the X coord of the plane
             testPoint1[0] = (planeD + planeB*testPoint1[1] + planeC*testPoint1[2])/float(-planeA)
             testPoint2[0] = (planeD + planeB*testPoint2[1] + planeC*testPoint2[2])/float(-planeA)
             testPoint3[0] = (planeD + planeB*testPoint3[1] + planeC*testPoint3[2])/float(-planeA)
             
-
             reconstructed3D.append(testPoint1)
             reconstructed3D.append(testPoint2)
             reconstructed3D.append(testPoint3)
@@ -239,8 +241,7 @@ def main():
             scaled_polygon_pcl = pcl2.create_cloud_xyz32(header, reconstructed3D)          
             pointcloud_publisher.publish(scaled_polygon_pcl)
             
-            #plot3DResults(ax, reconstructed3D)
+#            plot3DResults(ax, reconstructed3D)
 
-    
 if __name__ == "__main__":
     main()
